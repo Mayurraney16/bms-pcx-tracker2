@@ -1,0 +1,21 @@
+{
+  "alert_mode": "telegram",
+  "telegram_bot_token": "9292977247:AAHHzaAmcxDaWy7plUonJD84FHcj5UA0Fwo",
+  "telegram_chat_id": "6312950419",
+  "callmebot_phone": "91XXXXXXXXXX",
+  "callmebot_api_key": "",
+  "twilio_account_sid": "",
+  "twilio_auth_token": "",
+  "twilio_from": "",
+  "twilio_to": "",
+  "polling_interval_seconds": 60,
+  "venue_code": "PRHN",
+  "venue_name": "Prasads Multiplex: Hyderabad",
+  "movie_title": "Avengers: Doomsday",
+  "language": "English",
+  "target_dates": [
+    "20261218",
+    "20261219",
+    "20261220"
+  ]
+}
