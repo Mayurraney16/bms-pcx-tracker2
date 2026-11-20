@@ -1,0 +1,71 @@
+name: Check Prasads PCX Tickets
+
+on:
+  schedule:
+    # Runs automatically every 5 minutes in the cloud, 24/7
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      test_alert:
+        description: "Optional: send a test alert only"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pcx-ticket-check
+  cancel-in-progress: false
+
+jobs:
+  check-tickets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run ticket watcher
+        env:
+          BMS_ALERT_MODE: ${{ secrets.BMS_ALERT_MODE || 'telegram' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_API_KEY: ${{ secrets.CALLMEBOT_API_KEY }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          TWILIO_TO: ${{ secrets.TWILIO_TO }}
+          BMS_HEADLESS: "true"
+        run: |
+          if [ "${{ inputs.test_alert }}" = "true" ]; then
+            python pcx_ticket_bot.py --test-alert
+          else
+            python pcx_ticket_bot.py --once
+          fi
+
+      - name: Save alerted dates state (prevent duplicate alerts)
+        if: always() && inputs.test_alert != true
+        run: |
+          if [ -f alerted_dates.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add alerted_dates.json
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: record alerted dates"
+              git push
+            fi
+          fi
