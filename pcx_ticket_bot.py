@@ -192,10 +192,47 @@ def save_alerted_shows(shows: Set[str]) -> None:
         log.warning("Could not save state file %s: %s", STATE_FILE, exc)
 
 
-def make_show_key(date_code: str, show_time: str, screen_label: str) -> str:
-    norm_time = re.sub(r"\s+", " ", show_time.strip().upper())
-    norm_screen = re.sub(r"\s+", " ", screen_label.strip().upper())
-    return f"{date_code}|{norm_time}|{norm_screen}"
+def format_show_time(raw_time: str) -> str:
+    """Format raw time strings like '202612170800' into '08:00 AM'."""
+    raw = raw_time.strip()
+    if len(raw) == 12 and raw.isdigit():
+        try:
+            hh = int(raw[8:10])
+            mm = int(raw[10:12])
+            period = "AM" if hh < 12 else "PM"
+            hh_12 = hh if 1 <= hh <= 12 else (hh - 12 if hh > 12 else 12)
+            return f"{hh_12:02d}:{mm:02d} {period}"
+        except Exception:
+            pass
+    return raw.upper()
+
+
+def make_show_key(date_code: str, show_time: str, screen_label: str, is_main: bool = False) -> str:
+    clean_time = format_show_time(show_time)
+    if is_main:
+        clean_screen = "MAIN_SCREEN"
+    else:
+        clean_screen = re.sub(r"\s+", " ", screen_label.strip().upper())
+    return f"{date_code}|{clean_time}|{clean_screen}"
+
+
+def git_commit_and_push_state() -> None:
+    """Immediately commit and push alerted_shows.json in GitHub Actions so other runs never miss it."""
+    try:
+        import subprocess
+        if not os.getenv("GITHUB_ACTIONS"):
+            return
+        subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=False)
+        subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=False)
+        subprocess.run(["git", "add", "alerted_shows.json"], check=False)
+        diff = subprocess.run(["git", "diff", "--cached", "--quiet"])
+        if diff.returncode != 0:
+            subprocess.run(["git", "commit", "-m", "chore: auto-save alerted shows [skip ci]"], check=False)
+            subprocess.run(["git", "pull", "--rebase", "origin", "main"], check=False)
+            subprocess.run(["git", "push", "origin", "main"], check=False)
+            log.info("alerted_shows.json successfully committed and pushed to GitHub.")
+    except Exception as exc:
+        log.warning("Could not auto-push alerted_shows.json: %s", exc)
 
 
 # ==============================================================================
@@ -469,9 +506,16 @@ def filter_new_shows(
     """Return only (key, show_dict) entries not previously alerted."""
     new_items: List[Tuple[str, Dict[str, object]]] = []
     for sh in shows:
-        key = make_show_key(date_code, str(sh["time"]), str(sh["screen"]))
-        if key not in alerted_shows:
-            new_items.append((key, sh))
+        time_str = str(sh["time"])
+        screen_str = str(sh["screen"])
+        is_pcx = bool(sh.get("is_pcx", False))
+
+        norm_key = make_show_key(date_code, time_str, screen_str, is_main=is_pcx)
+        raw_key = f"{date_code}|{time_str.upper()}|{screen_str.upper()}"
+
+        if norm_key in alerted_shows or raw_key in alerted_shows:
+            continue
+        new_items.append((norm_key, sh))
     return new_items
 
 
@@ -496,8 +540,9 @@ def run_check_cycle(alerted_shows: Set[str]) -> bool:
         header = "🚨 [PCX / INFINITY VISION (MAIN SCREEN) OPEN!] 🚨" if has_pcx else "🎟️ NEW PRASADS SHOWS OPEN!"
         lines = []
         for _, sh in new_items:
+            display_time = format_show_time(str(sh["time"]))
             tag = "[PCX / INFINITY VISION (SCREEN 6)]" if sh["is_pcx"] else f"[{sh['screen']}]"
-            lines.append(f"  • {sh['time']} {tag}")
+            lines.append(f"  • {display_time} {tag}")
 
         msg = (
             f"{header}\n\n"
@@ -508,9 +553,12 @@ def run_check_cycle(alerted_shows: Set[str]) -> bool:
         )
         log.info("NEW SHOWS DETECTED for %s (%d new)! Sending alert...", date_label, len(new_items))
         if send_alert(msg, click_url=url):
-            for key, _ in new_items:
+            for key, sh in new_items:
                 alerted_shows.add(key)
+                raw_k = f"{date_code}|{str(sh['time']).upper()}|{str(sh['screen']).upper()}"
+                alerted_shows.add(raw_k)
             save_alerted_shows(alerted_shows)
+            git_commit_and_push_state()
         else:
             log.warning("Alert delivery failed for %s; will retry next cycle.", date_label)
 
