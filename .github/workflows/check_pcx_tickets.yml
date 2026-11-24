@@ -54,7 +54,7 @@ jobs:
             python pcx_ticket_bot.py --test-alert
           else
             # Run active 45-minute continuous loop in the cloud
-            python pcx_ticket_bot.py --loop-minutes 45
+            python pcx_ticket_bot.py --loop-minutes 25
           fi
 
       - name: Save alerted shows state (prevent duplicate alerts)
