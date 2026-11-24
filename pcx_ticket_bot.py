@@ -97,7 +97,18 @@ TWILIO_TO = cfg("TWILIO_TO", "twilio_to")
 VENUE_CODE = cfg("BMS_VENUE_CODE", "venue_code", "PRHN")
 MOVIE_KEYWORDS = ["avengers: doomsday", "avengers doomsday", "doomsday"]
 LANGUAGE_KEYWORD = cfg("BMS_LANGUAGE", "language", "english").lower()
-SCREEN_KEYWORDS = ["pcx screen", "pcx hdr", "pcx"]
+SCREEN_KEYWORDS = [
+    "pcx screen",
+    "pcx hdr",
+    "pcx",
+    "infinity vision",
+    "infinity vision 3d",
+    "ms infinity vision",
+    "infinity",
+    "screen 6",
+    "screen-6",
+    "scr 6",
+]
 
 # False = alert for ANY new showtime (PCX tagged prominently); True = PCX only
 PCX_ONLY = cfg("BMS_PCX_ONLY", "pcx_only", "false").lower() == "true"
@@ -482,10 +493,10 @@ def run_check_cycle(alerted_shows: Set[str]) -> bool:
 
         found_new = True
         has_pcx = any(bool(sh["is_pcx"]) for _, sh in new_items)
-        header = "🚨 [PCX SCREEN OPEN!] 🚨" if has_pcx else "🎟️ NEW PRASADS SHOWS OPEN!"
+        header = "🚨 [PCX / INFINITY VISION (MAIN SCREEN) OPEN!] 🚨" if has_pcx else "🎟️ NEW PRASADS SHOWS OPEN!"
         lines = []
         for _, sh in new_items:
-            tag = "[PCX SCREEN]" if sh["is_pcx"] else f"[{sh['screen']}]"
+            tag = "[PCX / INFINITY VISION (SCREEN 6)]" if sh["is_pcx"] else f"[{sh['screen']}]"
             lines.append(f"  • {sh['time']} {tag}")
 
         msg = (
