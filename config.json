@@ -9,7 +9,7 @@
   "twilio_auth_token": "",
   "twilio_from": "",
   "twilio_to": "",
-  "polling_interval_seconds": 45,
+  "polling_interval_seconds": 15,
   "venue_code": "PRHN",
   "language": "English",
   "pcx_only": false,
