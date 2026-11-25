@@ -429,8 +429,18 @@ def fetch_via_cffi(url: str, date_code: str) -> Tuple[str, List[Dict[str, object
     if not HAS_CURL_CFFI:
         return "error", []
     try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        }
         session = cffi_requests.Session()
-        r = session.get(url, impersonate="chrome120", timeout=15)
+        r = session.get(url, impersonate="chrome120", headers=headers, timeout=15)
         if r.status_code in (403, 429, 503):
             log.warning("BookMyShow returned HTTP %s (possible Cloudflare block) on %s", r.status_code, date_code)
             return "blocked", []
@@ -451,52 +461,65 @@ def fetch_via_cffi(url: str, date_code: str) -> Tuple[str, List[Dict[str, object
 
 
 def fetch_via_playwright(url: str, date_code: str) -> List[Dict[str, object]]:
-    """Fallback browser check if curl_cffi is blocked by Cloudflare."""
+    """Fallback browser check with stealth parameters if curl_cffi is blocked by Cloudflare."""
     if not HAS_PLAYWRIGHT:
         log.warning("Playwright not installed; cannot run browser fallback.")
         return []
     shows: List[Dict[str, object]] = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=HEADLESS)
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-            ),
-            locale="en-IN",
-            timezone_id="Asia/Kolkata",
-        )
-        page = context.new_page()
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(4500)
-            if date_code not in page.url:
-                return []
-            title = (page.title() or "").lower()
-            if "just a moment" in title or "attention required" in title:
-                log.warning("Playwright also hit Cloudflare challenge on %s.", date_code)
-                return []
-            html = page.content()
-            state = extract_initial_state(html)
-            if state:
-                return parse_shows_from_initial_state(state, date_code)
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ],
+            )
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1920, "height": 1080},
+                locale="en-IN",
+                timezone_id="Asia/Kolkata",
+            )
+            context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            page = context.new_page()
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(3500)
+                if date_code not in page.url:
+                    return []
+                title = (page.title() or "").lower()
+                if "just a moment" in title or "attention required" in title:
+                    log.warning("Playwright also hit Cloudflare challenge on %s.", date_code)
+                    return []
+                html = page.content()
+                state = extract_initial_state(html)
+                if state:
+                    return parse_shows_from_initial_state(state, date_code)
 
-            # DOM text fallback if __INITIAL_STATE__ wasn't embedded
-            body_text = page.inner_text("body")
-            low = body_text.lower()
-            if any(k in low for k in MOVIE_KEYWORDS) and LANGUAGE_KEYWORD in low:
-                is_pcx = any(k in low for k in SCREEN_KEYWORDS)
-                if not PCX_ONLY or is_pcx:
-                    times = sorted(set(TIME_PATTERN.findall(body_text))) or ["Check BookMyShow"]
-                    for t in times:
-                        shows.append({
-                            "time": t.upper(),
-                            "screen": "PCX Screen" if is_pcx else "Prasads Screen",
-                            "is_pcx": is_pcx,
-                        })
-        finally:
-            context.close()
-            browser.close()
+                # DOM text fallback if __INITIAL_STATE__ wasn't embedded
+                body_text = page.inner_text("body")
+                low = body_text.lower()
+                if any(k in low for k in MOVIE_KEYWORDS) and LANGUAGE_KEYWORD in low:
+                    is_pcx = any(k in low for k in SCREEN_KEYWORDS)
+                    if not PCX_ONLY or is_pcx:
+                        times = sorted(set(TIME_PATTERN.findall(body_text))) or ["Check BookMyShow"]
+                        for t in times:
+                            shows.append({
+                                "time": t.upper(),
+                                "screen": "PCX / Infinity Vision (Screen 6)" if is_pcx else "Prasads Screen",
+                                "is_pcx": is_pcx,
+                            })
+            finally:
+                context.close()
+                browser.close()
+    except Exception as exc:
+        log.warning("Playwright execution error on %s: %s", date_code, exc)
     return shows
 
 
@@ -522,45 +545,48 @@ def filter_new_shows(
 def run_check_cycle(alerted_shows: Set[str]) -> bool:
     found_new = False
     for date_code, date_label in TARGET_DATES:
-        url = PRASADS_BASE_URL.format(date=date_code)
-        log.info("Checking Prasads for %s (%s)...", date_label, date_code)
+        try:
+            url = PRASADS_BASE_URL.format(date=date_code)
+            log.info("Checking Prasads for %s (%s)...", date_label, date_code)
 
-        status, shows = fetch_via_cffi(url, date_code)
-        if status == "blocked":
-            log.info("Falling back to Playwright for %s...", date_label)
-            shows = fetch_via_playwright(url, date_code)
+            status, shows = fetch_via_cffi(url, date_code)
+            if status == "blocked":
+                log.info("Falling back to Playwright for %s...", date_label)
+                shows = fetch_via_playwright(url, date_code)
 
-        new_items = filter_new_shows(date_code, shows, alerted_shows)
-        if not new_items:
-            log.info("No new shows for %s (total visible: %d).", date_label, len(shows))
-            continue
+            new_items = filter_new_shows(date_code, shows, alerted_shows)
+            if not new_items:
+                log.info("No new shows for %s (total visible: %d).", date_label, len(shows))
+                continue
 
-        found_new = True
-        has_pcx = any(bool(sh["is_pcx"]) for _, sh in new_items)
-        header = "🚨 [PCX / INFINITY VISION (MAIN SCREEN) OPEN!] 🚨" if has_pcx else "🎟️ NEW PRASADS SHOWS OPEN!"
-        lines = []
-        for _, sh in new_items:
-            display_time = format_show_time(str(sh["time"]))
-            tag = "[PCX / INFINITY VISION (SCREEN 6)]" if sh["is_pcx"] else f"[{sh['screen']}]"
-            lines.append(f"  • {display_time} {tag}")
+            found_new = True
+            has_pcx = any(bool(sh["is_pcx"]) for _, sh in new_items)
+            header = "🚨 [PCX / INFINITY VISION (MAIN SCREEN) OPEN!] 🚨" if has_pcx else "🎟️ NEW PRASADS SHOWS OPEN!"
+            lines = []
+            for _, sh in new_items:
+                display_time = format_show_time(str(sh["time"]))
+                tag = "[PCX / INFINITY VISION (SCREEN 6)]" if sh["is_pcx"] else f"[{sh['screen']}]"
+                lines.append(f"  • {display_time} {tag}")
 
-        msg = (
-            f"{header}\n\n"
-            f"🎬 Movie: Avengers: Doomsday (English)\n"
-            f"📍 Venue: Prasads Multiplex, Hyderabad\n"
-            f"📅 Date: {date_label}\n"
-            f"⏰ New Shows:\n" + "\n".join(lines) + f"\n\n🔗 Book now:\n{url}"
-        )
-        log.info("NEW SHOWS DETECTED for %s (%d new)! Sending alert...", date_label, len(new_items))
-        if send_alert(msg, click_url=url):
-            for key, sh in new_items:
-                alerted_shows.add(key)
-                raw_k = f"{date_code}|{str(sh['time']).upper()}|{str(sh['screen']).upper()}"
-                alerted_shows.add(raw_k)
-            save_alerted_shows(alerted_shows)
-            git_commit_and_push_state()
-        else:
-            log.warning("Alert delivery failed for %s; will retry next cycle.", date_label)
+            msg = (
+                f"{header}\n\n"
+                f"🎬 Movie: Avengers: Doomsday (English)\n"
+                f"📍 Venue: Prasads Multiplex, Hyderabad\n"
+                f"📅 Date: {date_label}\n"
+                f"⏰ New Shows:\n" + "\n".join(lines) + f"\n\n🔗 Book now:\n{url}"
+            )
+            log.info("NEW SHOWS DETECTED for %s (%d new)! Sending alert...", date_label, len(new_items))
+            if send_alert(msg, click_url=url):
+                for key, sh in new_items:
+                    alerted_shows.add(key)
+                    raw_k = f"{date_code}|{str(sh['time']).upper()}|{str(sh['screen']).upper()}"
+                    alerted_shows.add(raw_k)
+                save_alerted_shows(alerted_shows)
+                git_commit_and_push_state()
+            else:
+                log.warning("Alert delivery failed for %s; will retry next cycle.", date_label)
+        except Exception as date_exc:
+            log.error("Unexpected error checking date %s (%s): %s", date_label, date_code, date_exc)
 
     return found_new
 
